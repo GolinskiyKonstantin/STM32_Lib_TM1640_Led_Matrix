@@ -4,7 +4,7 @@
   * @file 			( фаил ):   TM1640.c
   * @brief 		( описание ):  	
   ******************************************************************************
-  * @attention 	( внимание ):
+  * @attention 	( внимание ):	author: Golinskiy Konstantin	e-mail: golinskiy.konstantin@gmail.com
   ******************************************************************************
   
 */
@@ -12,17 +12,15 @@
 /* Includes ----------------------------------------------------------*/
 
 #include "TM1640.h"
-
-#include "animacion.h"
 #include "font.h"
-
 
 	uint8_t Cmd_DispCtrl = BRIGHTNESS_TM1640;		// контрастность дисплея от 0 -7 
 	
 	int32_t x = 0; 
 	int32_t y = 0;
+	
+	uint8_t frameBuffer[SIZE_MATRIX_COL];			// массив для буфера кадра на размер матрицы
 
-	uint8_t *frameBuffer = NULL;					// для функции malloc()
 /*
 	******************************************************************************
 	* @brief	 ( описание ):  функция задержки в микросекундах
@@ -165,7 +163,7 @@ void TM1640_displayOnOff( uint8_t OnOff ){
 */
 void TM1640_clearDisplay( void ){
 	
-	for( uint8_t i=0; i<16; i++ ){
+	for( uint8_t i=0; i<SIZE_MATRIX_COL; i++ ){
 		TM1640_display_byte( i, 0x00 ); 
 	}
 }
@@ -187,59 +185,6 @@ void TM1640_brightness( uint8_t brightness ){
 
 /*
 	******************************************************************************
-	* @brief	 ( описание ):  функция преобразования ASCII to UTF-8 для отображения кирилицы
-	* @param	( параметры ):	массив ( строка ) с данными которую нужно преобразовать
-	* @return  ( возвращает ):	указатель на память где храниться уже преобразованый массив
-
-	******************************************************************************
-*/
-// функция для кодировки русских символов в UTF-8
-char *pText = 0;
-// незабываем каждый раз после вызова функции utf8rus() освобождать память
-// free( pText );	// освобождаем память выделенную в функции utf8rus() посредством malloc();
-
-char *utf8rus( char *source ){
-	
-	int i,k;
-	k = strlen( (char*)source );
-	pText = (char *)malloc( sizeof( k ) );
-	
-	memset(pText,0,sizeof(*pText));	// отчистка памяти от мусора
-	
-  unsigned char n;
-  char m[2] = { '0', '\0' };
-
-  k = strlen( (char*)source );
-  i = 0;
-
-  while (i < k) {
-    n = source[i]; i++;
-
-    if (n >= 0xC0) {
-			switch (n) {
-				case 0xD0: {
-					n = source[i]; i++;
-					if (n == 0x81) { n = 0xA8; break; }
-					if (n >= 0x90 && n <= 0xBF) n = n + 0x30;
-					break;
-				}
-				case 0xD1: {
-					n = source[i]; i++;
-					if (n == 0x91) { n = 0xB8; break; }
-					if (n >= 0x80 && n <= 0x8F) n = n + 0x70;
-					break;
-				}
-			}
-		}
-		m[0] = n; 
-		strcat( pText, m);
-	}
-	return pText;
-} 
-//----------------------------------------------------------------------------------
-
-/*
-	******************************************************************************
 	* @brief	 ( описание ):  функция получения буффера для работы с ним
 	* @param	( параметры ):	координата X и Y 
 	* @return  ( возвращает ):	указатель на буффер
@@ -248,7 +193,7 @@ char *utf8rus( char *source ){
 */
 uint8_t* _getBufferPtr( int8_t x, int8_t y ){
 	
-	if ( ( y < 0 ) || ( y >= 16 ) ){
+	if ( ( y < 0 ) || ( y >= SIZE_MATRIX_COL ) ){
 		return NULL;
 	}
 	if ( ( x < 0 ) || ( x >= ( 8 ) ) ){
@@ -297,7 +242,7 @@ void setPixel( int8_t y, int8_t x, uint8_t enabled ){
 
 	******************************************************************************
 */
-void drawSprite( uint8_t* sprite, int x, int y, int width, int height ){
+void drawSprite( const uint8_t* sprite, int x, int y, int width, int height ){
 	
   // The mask is used to get the column bit from the sprite row
   uint8_t mask = 0x80;
@@ -319,17 +264,56 @@ void drawSprite( uint8_t* sprite, int x, int y, int width, int height ){
 /*
 	******************************************************************************
 	* @brief	 ( описание ):  функция для преобразования полученного символа в его нарисованный вариант в массиве
-	* @param	( параметры ):	1 пар - ссылка на текст, 2 пар - длина строки, 3 пар и 4 пар координаты X Y
+	* @param	( параметры ):	1 пар - ссылка на текст, 2 пар и 3 пар координаты X Y
 	* @return  ( возвращает ):	
 
 	******************************************************************************
 */
-void TM1640_drawString_buff(char* text, int len, int x, int y ){
+void TM1640_drawString_buff(char* text, int x, int y ){
+
+  uint16_t len = strlen(text);
+		
+  uint16_t count_len =0;
 	
-  for( int idx = 0; idx < len; idx ++){
-	  
-    uint8_t c = text[idx];
-	  
+  while( len-- ){
+
+	count_len++;  
+    uint8_t c;
+	
+	//---------------------------------------------------------------------
+		// проверка на кириллицу UTF-8, если латиница то пропускаем if
+		// Расширенные символы ASCII Win-1251 кириллица (код символа 128-255)
+		// проверяем первый байт из двух ( так как UTF-8 ето два байта )
+		// если он больше либо равен 0xC0 ( первый байт в кириллеце будет равен 0xD0 либо 0xD1 именно в алфавите )
+		if ( (uint8_t)*text >= 0xC0 ){	// код 0xC0 соответствует символу кириллица 'A' по ASCII Win-1251
+			
+			// проверяем какой именно байт первый 0xD0 либо 0xD1
+			switch ((uint8_t)*text) {
+				case 0xD0: {
+					// увеличиваем массив так как нам нужен второй байт
+					text++;
+					// проверяем второй байт там сам символ
+					if ((uint8_t)*text == 0x81) { c = 0xA8; break; }		// байт символа Ё ( если нужнф еще символы добавляем тут и в функции DrawChar() )
+					if ((uint8_t)*text >= 0x90 && (uint8_t)*text <= 0xBF){ c = (*text) + 0x30; }	// байт символов А...Я а...п  делаем здвиг на +48
+					break;
+				}
+				case 0xD1: {
+					// увеличиваем массив так как нам нужен второй байт
+					text++;
+					// проверяем второй байт там сам символ
+					if ((uint8_t)*text == 0x91) { c = 0xB8; break; }		// байт символа ё ( если нужнф еще символы добавляем тут и в функции DrawChar() )
+					if ((uint8_t)*text >= 0x80 && (uint8_t)*text <= 0x8F){ c = (*text) + 0x70; }	// байт символов п...я	елаем здвиг на +112
+					break;
+				}
+			}
+		}
+		else{
+			c = *text;
+		}
+		
+		text++;
+	//---------------------------------------------------------------------
+		
 	// номер по ASCII - позиция в массиве  = значение которое нужно отнять
 	  
 	  // символы латинские буквы цифры и спецсимволы начинаються с - 32 символ по ASCII а в массиве 0 эллемент
@@ -358,12 +342,14 @@ void TM1640_drawString_buff(char* text, int len, int x, int y ){
 	  
 	  
     // stop if char is outside visible area
-    if( x + idx * 8  > ( 16 ) )
+    if( x + count_len * 8  > ( SIZE_MATRIX_COL ) ){
       return;
-
+	}
+	
     // only draw if char is visible
-    if( 8 + x + idx * 8 > 0 )
-      drawSprite( disp1ay[c], x + idx* 8, y, 8, 8 );
+    if( 8 + x + count_len * 8 > 0 ){
+      drawSprite( disp1ay[c], x + count_len* 8, y, 8, 8 );
+	}
   }
 } 
 //----------------------------------------------------------------------------------
@@ -378,7 +364,7 @@ void TM1640_drawString_buff(char* text, int len, int x, int y ){
 */
 void TM1640_display_Draw( void ){	
 
-	for (int16_t d = 0; d != 16; d ++){
+	for (int16_t d = 0; d != SIZE_MATRIX_COL; d ++){
 		
 		uint8_t data = frameBuffer[d];
 
@@ -408,10 +394,30 @@ void TM1640_display_Draw( void ){
 */
 void clear_buff( void ){
 	
-	memset( frameBuffer, 0, 16 );
+	memset( frameBuffer, 0, SIZE_MATRIX_COL );
 }
 //----------------------------------------------------------------------------------
 
+/*
+	******************************************************************************
+	* @brief	 ( описание ):  функция подсчета длины строки с учетом кириллицы ( 2 байта на символ )
+	* @param	( параметры ):	
+	* @return  ( возвращает ):	
 
+	******************************************************************************
+*/
+uint16_t strlenUTF8( char* str ){
+	uint16_t i = 0;
+	while( *str != '\0' ){
+		if( (uint8_t)*str >= 0xC0 ){	// код 0xC0 соответствует символу кириллица 'A' по ASCII Win-1251
+			str++;
+		}
+		
+		i++;
+		str++;
+	}
+	return i;
+}
+//----------------------------------------------------------------------------------
 
 /************************ (C) COPYRIGHT GKP *****END OF FILE****/
